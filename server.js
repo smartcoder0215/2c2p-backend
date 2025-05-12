@@ -110,10 +110,11 @@ app.post('/api/create-payment', async (req, res) => {
       throw new Error(`Payment token request failed: ${responsePayload.respDesc}`);
     }
 
-    // Return payment URL and token
+    // Return payment URL, token, and invoiceNo
     res.json({
       paymentUrl: responsePayload.webPaymentUrl,
-      paymentToken: responsePayload.paymentToken
+      paymentToken: responsePayload.paymentToken,
+      invoiceNo
     });
 
   } catch (error) {
@@ -126,7 +127,7 @@ app.post('/api/create-payment', async (req, res) => {
 });
 
 // Payment callback endpoint (Backend API)
-app.post('/api/payment-callback', (req, res) => {
+app.post('/api/payment-callback', async (req, res) => {
   try {
     const {
       merchantID,
@@ -147,8 +148,14 @@ app.post('/api/payment-callback', (req, res) => {
     console.log('Payment Result (Backend):', {
       merchantID,
       invoiceNo,
+      accountNo,
       amount,
       currencyCode,
+      tranRef,
+      referenceNo,
+      approvalCode,
+      eci,
+      transactionDateTime,
       respCode,
       respDesc
     });
@@ -156,12 +163,16 @@ app.post('/api/payment-callback', (req, res) => {
     // If respCode is not 0000, we need to do a payment inquiry
     if (respCode !== '0000') {
       console.log('Payment inquiry needed for invoice:', invoiceNo);
+      const inquiryResult = await performPaymentInquiry(invoiceNo);
+      console.log('Payment inquiry result:', inquiryResult);
     }
 
+    // Always return success to 2C2P
     res.json({ status: 'success' });
   } catch (error) {
     console.error('Payment callback error:', error);
-    res.redirect('http://localhost:3000/payment-result?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false');
+    // Still return success to 2C2P even if we have an error
+    res.json({ status: 'success' });
   }
 });
 
@@ -170,17 +181,23 @@ app.post('/api/payment-inquiry', async (req, res) => {
   try {
     const { invoiceNo } = req.body;
 
-    // TODO: Implement payment inquiry API call
-    // This would make a request to 2C2P's Payment Inquiry API
-    // to get the full payment information
+    if (!invoiceNo) {
+      return res.status(400).json({ 
+        error: 'Invoice number is required',
+        respCode: '9999',
+        respDesc: 'Invalid request - missing invoice number'
+      });
+    }
 
-    res.json({ 
-      status: 'pending',
-      message: 'Payment inquiry not implemented yet'
-    });
+    const inquiryResult = await performPaymentInquiry(invoiceNo);
+    res.json(inquiryResult);
   } catch (error) {
     console.error('Payment inquiry error:', error);
-    res.status(500).json({ error: 'Failed to process payment inquiry' });
+    res.status(500).json({ 
+      error: 'Failed to process payment inquiry',
+      respCode: '9999',
+      respDesc: 'Internal server error'
+    });
   }
 });
 
@@ -229,10 +246,86 @@ async function performPaymentInquiry(invoiceNo) {
 }
 
 // Update frontend callback endpoint
+app.get('/api/payment-frontend-callback', async (req, res) => {
+  try {
+    // Get parameters from query string
+    const {
+      invoiceNo,
+      channelCode,
+      respCode,
+      respDesc
+    } = req.query;
+
+    // Log the frontend callback
+    console.log('Frontend Callback Received (GET):', {
+      invoiceNo,
+      channelCode,
+      respCode,
+      respDesc
+    });
+
+    // If respCode is 2000, we need to do a payment inquiry
+    if (respCode === '2000') {
+      const inquiryResult = await performPaymentInquiry(invoiceNo);
+      console.log('Payment inquiry result:', inquiryResult);
+
+      // Handle specific error codes
+      let errorMessage = inquiryResult.respDesc;
+      let errorDetails = '';
+      let isSuccess = false;
+      
+      // Check for success codes
+      if (inquiryResult.respCode === '0000') {
+        isSuccess = true;
+        errorMessage = 'Transaction successful';
+      } else {
+        switch (inquiryResult.respCode) {
+          case '4099':
+            errorMessage = 'Transaction failed. Please try again.';
+            errorDetails = 'This could be due to insufficient funds, card restrictions, or bank rejection.';
+            break;
+          default:
+            errorMessage = `Transaction failed: ${inquiryResult.respDesc}`;
+            errorDetails = 'Please try again or contact support if the issue persists.';
+        }
+      }
+
+      // Redirect to frontend with payment result
+      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      redirectUrl.searchParams.append('invoiceNo', inquiryResult.invoiceNo || '');
+      redirectUrl.searchParams.append('amount', inquiryResult.amount || '');
+      redirectUrl.searchParams.append('currencyCode', inquiryResult.currencyCode || '');
+      redirectUrl.searchParams.append('respCode', inquiryResult.respCode || '');
+      redirectUrl.searchParams.append('respDesc', errorMessage);
+      redirectUrl.searchParams.append('isSuccess', isSuccess.toString());
+      if (errorDetails) {
+        redirectUrl.searchParams.append('errorDetails', errorDetails);
+      }
+
+      console.log('Redirecting to:', redirectUrl.toString());
+      res.redirect(redirectUrl.toString());
+    } else {
+      // Handle other response codes directly
+      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      redirectUrl.searchParams.append('invoiceNo', invoiceNo || '');
+      redirectUrl.searchParams.append('respCode', respCode || '');
+      redirectUrl.searchParams.append('respDesc', respDesc || '');
+      redirectUrl.searchParams.append('isSuccess', (respCode === '0000').toString());
+
+      console.log('Redirecting to:', redirectUrl.toString());
+      res.redirect(redirectUrl.toString());
+    }
+  } catch (error) {
+    console.error('Frontend callback error:', error);
+    res.redirect('http://localhost:3000/payment-result?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false');
+  }
+});
+
+// Keep the POST endpoint for backward compatibility
 app.post('/api/payment-frontend-callback', async (req, res) => {
   try {
     // Log the entire request body for debugging
-    console.log('Frontend Callback Request Body:', req.body);
+    console.log('Frontend Callback Request Body (POST):', req.body);
 
     const {
       invoiceNo,
@@ -242,52 +335,64 @@ app.post('/api/payment-frontend-callback', async (req, res) => {
     } = req.body;
 
     // Log the frontend callback
-    console.log('Frontend Callback Received:', {
+    console.log('Frontend Callback Received (POST):', {
       invoiceNo,
       channelCode,
       respCode,
       respDesc
     });
 
-    // Perform payment inquiry to get full payment details
-    const inquiryResult = await performPaymentInquiry(invoiceNo);
-    console.log('Payment inquiry result:', inquiryResult);
+    // If respCode is 2000, we need to do a payment inquiry
+    if (respCode === '2000') {
+      const inquiryResult = await performPaymentInquiry(invoiceNo);
+      console.log('Payment inquiry result:', inquiryResult);
 
-    // Handle specific error codes
-    let errorMessage = inquiryResult.respDesc;
-    let errorDetails = '';
-    let isSuccess = false;
-    
-    // Check for success codes
-    if (inquiryResult.respCode === '0000') {
-      isSuccess = true;
-      errorMessage = 'Transaction successful';
-    } else {
-      switch (inquiryResult.respCode) {
-        case '4099':
-          errorMessage = 'Transaction failed. Please try again.';
-          errorDetails = 'This could be due to insufficient funds, card restrictions, or bank rejection.';
-          break;
-        default:
-          errorMessage = `Transaction failed: ${inquiryResult.respDesc}`;
-          errorDetails = 'Please try again or contact support if the issue persists.';
+      // Handle specific error codes
+      let errorMessage = inquiryResult.respDesc;
+      let errorDetails = '';
+      let isSuccess = false;
+      
+      // Check for success codes
+      if (inquiryResult.respCode === '0000') {
+        isSuccess = true;
+        errorMessage = 'Transaction successful';
+      } else {
+        switch (inquiryResult.respCode) {
+          case '4099':
+            errorMessage = 'Transaction failed. Please try again.';
+            errorDetails = 'This could be due to insufficient funds, card restrictions, or bank rejection.';
+            break;
+          default:
+            errorMessage = `Transaction failed: ${inquiryResult.respDesc}`;
+            errorDetails = 'Please try again or contact support if the issue persists.';
+        }
       }
-    }
 
-    // Redirect to frontend with payment result
-    const redirectUrl = new URL('http://localhost:3000/payment-result');
-    redirectUrl.searchParams.append('invoiceNo', inquiryResult.invoiceNo || '');
-    redirectUrl.searchParams.append('amount', inquiryResult.amount || '');
-    redirectUrl.searchParams.append('currencyCode', inquiryResult.currencyCode || '');
-    redirectUrl.searchParams.append('respCode', inquiryResult.respCode || '');
-    redirectUrl.searchParams.append('respDesc', errorMessage);
-    redirectUrl.searchParams.append('isSuccess', isSuccess.toString());
-    if (errorDetails) {
-      redirectUrl.searchParams.append('errorDetails', errorDetails);
-    }
+      // Redirect to frontend with payment result
+      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      redirectUrl.searchParams.append('invoiceNo', inquiryResult.invoiceNo || '');
+      redirectUrl.searchParams.append('amount', inquiryResult.amount || '');
+      redirectUrl.searchParams.append('currencyCode', inquiryResult.currencyCode || '');
+      redirectUrl.searchParams.append('respCode', inquiryResult.respCode || '');
+      redirectUrl.searchParams.append('respDesc', errorMessage);
+      redirectUrl.searchParams.append('isSuccess', isSuccess.toString());
+      if (errorDetails) {
+        redirectUrl.searchParams.append('errorDetails', errorDetails);
+      }
 
-    console.log('Redirecting to:', redirectUrl.toString());
-    res.redirect(redirectUrl.toString());
+      console.log('Redirecting to:', redirectUrl.toString());
+      res.redirect(redirectUrl.toString());
+    } else {
+      // Handle other response codes directly
+      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      redirectUrl.searchParams.append('invoiceNo', invoiceNo || '');
+      redirectUrl.searchParams.append('respCode', respCode || '');
+      redirectUrl.searchParams.append('respDesc', respDesc || '');
+      redirectUrl.searchParams.append('isSuccess', (respCode === '0000').toString());
+
+      console.log('Redirecting to:', redirectUrl.toString());
+      res.redirect(redirectUrl.toString());
+    }
   } catch (error) {
     console.error('Frontend callback error:', error);
     res.redirect('http://localhost:3000/payment-result?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false');
