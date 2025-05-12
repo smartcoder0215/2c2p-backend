@@ -17,6 +17,9 @@ const MERCHANT_ID = 'JT01';
 const SECRET_KEY = 'ECC4E54DBA738857B84A7EBC6B5DC7187B8DA68750E88AB53AAA41F548D6F2D9';
 const PAYMENT_TOKEN_API_URL = 'https://sandbox-pgw.2c2p.com/payment/4.3/paymentToken';
 const PAYMENT_INQUIRY_API_URL = 'https://sandbox-pgw.2c2p.com/payment/4.3/paymentInquiry';
+const FRONTEND_RETURN_URL = process.env.FRONTEND_RETURN_URL || 'http://localhost:5000/api/payment-frontend-callback';
+const BACKEND_RETURN_URL = process.env.BACKEND_RETURN_URL || 'http://localhost:5000/api/payment-callback';
+const FRONTEND_RESULT_URL = process.env.FRONTEND_RESULT_URL || 'http://localhost:3000/payment-result';
 
 // Create payment endpoint
 app.post('/api/create-payment', async (req, res) => {
@@ -64,8 +67,8 @@ app.post('/api/create-payment', async (req, res) => {
       statementDescriptor: "",
       subMerchants: [],
       locale: "en",
-      frontendReturnUrl: "http://localhost:5000/api/payment-frontend-callback",
-      backendReturnUrl: "http://localhost:5000/api/payment-callback",
+      frontendReturnUrl: FRONTEND_RETURN_URL,
+      backendReturnUrl: BACKEND_RETURN_URL,
       nonceStr: crypto.randomBytes(32).toString('hex'),
       uiParams: {
         userInfo: {
@@ -291,7 +294,7 @@ app.get('/api/payment-frontend-callback', async (req, res) => {
       }
 
       // Redirect to frontend with payment result
-      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      const redirectUrl = new URL(FRONTEND_RESULT_URL);
       redirectUrl.searchParams.append('invoiceNo', inquiryResult.invoiceNo || '');
       redirectUrl.searchParams.append('amount', inquiryResult.amount || '');
       redirectUrl.searchParams.append('currencyCode', inquiryResult.currencyCode || '');
@@ -306,7 +309,7 @@ app.get('/api/payment-frontend-callback', async (req, res) => {
       res.redirect(redirectUrl.toString());
     } else {
       // Handle other response codes directly
-      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      const redirectUrl = new URL(FRONTEND_RESULT_URL);
       redirectUrl.searchParams.append('invoiceNo', invoiceNo || '');
       redirectUrl.searchParams.append('respCode', respCode || '');
       redirectUrl.searchParams.append('respDesc', respDesc || '');
@@ -317,7 +320,7 @@ app.get('/api/payment-frontend-callback', async (req, res) => {
     }
   } catch (error) {
     console.error('Frontend callback error:', error);
-    res.redirect('http://localhost:3000/payment-result?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false');
+    res.redirect(`${FRONTEND_RESULT_URL}?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false`);
   }
 });
 
@@ -369,7 +372,7 @@ app.post('/api/payment-frontend-callback', async (req, res) => {
       }
 
       // Redirect to frontend with payment result
-      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      const redirectUrl = new URL(FRONTEND_RESULT_URL);
       redirectUrl.searchParams.append('invoiceNo', inquiryResult.invoiceNo || '');
       redirectUrl.searchParams.append('amount', inquiryResult.amount || '');
       redirectUrl.searchParams.append('currencyCode', inquiryResult.currencyCode || '');
@@ -384,7 +387,7 @@ app.post('/api/payment-frontend-callback', async (req, res) => {
       res.redirect(redirectUrl.toString());
     } else {
       // Handle other response codes directly
-      const redirectUrl = new URL('http://localhost:3000/payment-result');
+      const redirectUrl = new URL(FRONTEND_RESULT_URL);
       redirectUrl.searchParams.append('invoiceNo', invoiceNo || '');
       redirectUrl.searchParams.append('respCode', respCode || '');
       redirectUrl.searchParams.append('respDesc', respDesc || '');
@@ -395,7 +398,7 @@ app.post('/api/payment-frontend-callback', async (req, res) => {
     }
   } catch (error) {
     console.error('Frontend callback error:', error);
-    res.redirect('http://localhost:3000/payment-result?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false');
+    res.redirect(`${FRONTEND_RESULT_URL}?respCode=9999&respDesc=Error processing payment&errorDetails=An unexpected error occurred. Please try again.&isSuccess=false`);
   }
 });
 
